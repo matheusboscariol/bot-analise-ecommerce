@@ -3,6 +3,7 @@ import html
 import json
 import logging
 import os
+import re
 
 from dotenv import load_dotenv
 from groq import Groq, BadRequestError as GroqBadRequestError, RateLimitError as GroqRateLimitError
@@ -20,6 +21,15 @@ SUPABASE_URL = os.getenv("NEXT_PUBLIC_SUPABASE_URL")
 SUPABASE_KEY = os.getenv("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+
+_missing = [k for k, v in {
+    "NEXT_PUBLIC_SUPABASE_URL": SUPABASE_URL,
+    "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY": SUPABASE_KEY,
+    "GROQ_API_KEY": GROQ_API_KEY,
+    "TELEGRAM_BOT_TOKEN": TELEGRAM_TOKEN,
+}.items() if not v]
+if _missing:
+    raise ValueError(f"Variáveis de ambiente ausentes: {', '.join(_missing)}")
 
 sb: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 groq_client = Groq(api_key=GROQ_API_KEY)
@@ -112,19 +122,16 @@ def fetch_dados_clientes() -> dict:
     receita_ativos = sum(vpc[c["id_cliente"]]["receita"] for c in ativos)
     ticket_medio = receita_ativos / len(ativos) if ativos else 0.0
 
-    ranking = sorted(
-        [
-            {
-                "nome": c["nome_cliente"],
-                "estado": c.get("estado") or "N/D",
-                "receita_fmt": fmt_brl(vpc[c["id_cliente"]]["receita"]),
-                "pedidos": vpc[c["id_cliente"]]["pedidos"],
-            }
-            for c in ativos
-        ],
-        key=lambda x: float(x["receita_fmt"].replace("R$ ", "").replace(".", "").replace(",", ".")),
-        reverse=True,
-    )
+    ativos_sorted = sorted(ativos, key=lambda c: vpc[c["id_cliente"]]["receita"], reverse=True)
+    ranking = [
+        {
+            "nome": c["nome_cliente"],
+            "estado": c.get("estado") or "N/D",
+            "receita_fmt": fmt_brl(vpc[c["id_cliente"]]["receita"]),
+            "pedidos": vpc[c["id_cliente"]]["pedidos"],
+        }
+        for c in ativos_sorted
+    ]
 
     recompra_lst = [
         {"nome": c["nome_cliente"], "pedidos": vpc[c["id_cliente"]]["pedidos"]}
@@ -355,8 +362,7 @@ def loop_tool_use(messages: list) -> str:
             )
         except GroqRateLimitError as e:
             log.warning("Rate limit Groq: %s", e)
-            import re as _re
-            wait = _re.search(r"try again in ([^\.]+)", str(e))
+            wait = re.search(r"try again in ([^\.]+)", str(e))
             tempo = wait.group(1) if wait else "alguns minutos"
             raise RuntimeError(f"⏳ Limite diário de tokens do Groq atingido. Tente novamente em {tempo}.")
         except GroqBadRequestError as e:
@@ -404,7 +410,8 @@ def _groq_insight(prompt: str) -> str:
             messages=[{"role": "user", "content": prompt}],
             max_tokens=180,
         ).choices[0].message.content.strip()
-    except Exception:
+    except Exception as e:
+        log.warning("_groq_insight falhou: %s", e, exc_info=True)
         return ""
 
 
@@ -419,10 +426,10 @@ def gerar_relatorio() -> list[str]:
         for canal, dados in v["canal"].items()
     )
     top5_txt = "\n".join(
-        f"  {p['posicao']}. {html.escape(p['nome'])}: {p['receita_fmt']}"
-        for p in v["top_10_produtos"][:5]
+        f"  {prod['posicao']}. {html.escape(prod['nome'])}: {prod['receita_fmt']}"
+        for prod in v["top_10_produtos"][:5]
     )
-    canal_lider = next(iter(v["canal"]))
+    canal_lider = next(iter(v["canal"]), "N/D")
     insight1 = _groq_insight(
         f"Dados de vendas (e-commerce, snapshot 13/12/2025): receita total {v['receita_total_fmt']}, "
         f"{v['total_pedidos']} pedidos, ticket médio {v['ticket_medio_fmt']}, canal líder {canal_lider}. "
@@ -540,15 +547,6 @@ async def mensagem_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ─────────────────────────────────────────────
 
 def main():
-    missing = [k for k, v in {
-        "SUPABASE_URL": SUPABASE_URL,
-        "SUPABASE_KEY": SUPABASE_KEY,
-        "GROQ_API_KEY": GROQ_API_KEY,
-        "TELEGRAM_BOT_TOKEN": TELEGRAM_TOKEN,
-    }.items() if not v]
-    if missing:
-        raise ValueError(f"Variáveis de ambiente ausentes: {', '.join(missing)}")
-
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start_handler))
     app.add_handler(CommandHandler("relatorio", relatorio_handler))
