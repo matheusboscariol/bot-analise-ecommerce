@@ -1,0 +1,20 @@
+# Credenciais e segredos
+.env
+.env.local
+.env.*
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+
+# Logs
+*.log
+/tmp/
+
+# macOS
+.DS_Store
